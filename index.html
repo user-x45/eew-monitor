@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>緊急地震速報モニター</title>
+<style>
+:root{--bg:#0f1a2a;--panel:#17263b;--line:#2a3d57;--text:#e8eef6;--sub:#8fa3bd;--ok:#4cc38a;--warn:#ffb020;--danger:#ff4d4f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;line-height:1.6}
+body.alert{animation:flash 1s steps(2) 6}
+@keyframes flash{50%{background:#3a1218}}
+@media(prefers-reduced-motion:reduce){body.alert{animation:none;background:#3a1218}}
+main{max-width:720px;margin:0 auto;padding:16px}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px}
+h1{font-size:1.1rem;margin:0}
+#status{font-size:.8rem;color:var(--sub)}
+#status::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--sub);margin-right:6px}
+#status.on::before{background:var(--ok)}
+#status.off::before{background:var(--danger)}
+#current{margin:16px 0;padding:20px;border-radius:10px;background:var(--panel);border:1px solid var(--line)}
+#current.active{border:2px solid var(--danger)}
+#current.idle{text-align:center;color:var(--sub)}
+.big{font-size:2rem;font-weight:700;line-height:1.2;margin:4px 0}
+.badge{display:inline-block;padding:2px 10px;border-radius:4px;background:var(--danger);font-weight:700;font-size:.85rem}
+.badge.cancel{background:var(--sub);color:#000}
+.badge.test{background:var(--warn);color:#000}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;margin:12px 0 0}
+dt{color:var(--sub)}dd{margin:0}
+.areas{margin-top:12px;font-size:.9rem;color:var(--sub)}
+h2{font-size:.95rem;margin:24px 0 8px;color:var(--sub);font-weight:600}
+ul{list-style:none;margin:0;padding:0}
+li{padding:10px 12px;border-bottom:1px solid var(--line);font-size:.9rem;display:flex;justify-content:space-between;gap:8px}
+li small{color:var(--sub)}
+button{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;font-size:.8rem;cursor:pointer}
+button:focus-visible{outline:2px solid var(--warn)}
+footer{margin-top:24px;font-size:.75rem;color:var(--sub)}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>緊急地震速報モニター</h1>
+  <div><span id="status">接続中…</span> <button id="snd">音: オフ</button></div>
+</header>
+
+<section id="current" class="idle" aria-live="assertive">現在発表中の緊急地震速報はありません</section>
+
+<h2>最近の緊急地震速報(発表履歴)</h2>
+<ul id="hist"><li>読み込み中…</li></ul>
+
+<footer>
+データ提供: P2P地震情報(気象庁発表の緊急地震速報を配信)。この表示は参考用です。避難判断はテレビ・ラジオ・スマートフォンの公式通知を優先してください。
+</footer>
+</main>
+
+<script>
+const API="https://api.p2pquake.net/v2/history?codes=556&limit=10";
+const WS="wss://api.p2pquake.net/v2/ws";
+const SCALE={"-1":"不明",0:"0",10:"1",20:"2",30:"3",40:"4",45:"5弱",50:"5強",55:"6弱",60:"6強",70:"7"};
+const $=id=>document.getElementById(id);
+let sound=false, latest=null, ctx;
+
+const fmt=s=>s?new Date(s.replace(/-/g,"/").replace(/\.\d+$/,"")).toLocaleString("ja-JP"):"-";
+const scale=a=>{const f=SCALE[a.scaleFrom]??"?",t=SCALE[a.scaleTo]??"?";return f===t?f:f+"〜"+t};
+
+function beep(){
+  if(!sound)return;
+  try{
+    ctx=ctx||new AudioContext();
+    [0,0.35,0.7].forEach(d=>{
+      const o=ctx.createOscillator(),g=ctx.createGain();
+      o.frequency.value=880;g.gain.value=.2;
+      o.connect(g);g.connect(ctx.destination);
+      o.start(ctx.currentTime+d);o.stop(ctx.currentTime+d+.25);
+    });
+  }catch(e){}
+}
+
+function render(d){
+  const el=$("current"),h=d.earthquake?.hypocenter||{};
+  const age=(Date.now()-new Date(d.time.replace(/-/g,"/").replace(/\.\d+$/,"")))/1000;
+  if(d.cancelled||age>180){
+    el.className="idle";
+    el.textContent=d.cancelled?"直前の緊急地震速報は取り消されました":"現在発表中の緊急地震速報はありません";
+    return;
+  }
+  el.className="active";
+  const areas=(d.areas||[]).map(a=>`${a.name}(震度${scale(a)})`).join("、");
+  el.innerHTML=`
+    <span class="badge">緊急地震速報</span> ${d.test?'<span class="badge test">訓練・テスト</span>':""}
+    <div class="big">${h.name||"震源調査中"}</div>
+    <dl>
+      <dt>マグニチュード</dt><dd>${h.magnitude>=0?"M"+h.magnitude:"不明"}</dd>
+      <dt>深さ</dt><dd>${h.depth>=0?h.depth+" km":"不明"}</dd>
+      <dt>発生時刻</dt><dd>${fmt(d.earthquake?.originTime)}</dd>
+      <dt>発表時刻</dt><dd>${fmt(d.time)}</dd>
+    </dl>
+    <div class="areas">予想される強い揺れの地域:${areas||"情報なし"}</div>`;
+  document.body.classList.remove("alert");void document.body.offsetWidth;
+  if(!d.test){document.body.classList.add("alert");beep();}
+}
+
+function renderHist(list){
+  $("hist").innerHTML=list.map(d=>{
+    const h=d.earthquake?.hypocenter||{};
+    const tag=d.cancelled?"【取消】":d.test?"【訓練】":"";
+    return `<li><span>${tag}${h.name||"震源不明"} ${h.magnitude>=0?"M"+h.magnitude:""}</span><small>${fmt(d.time)}</small></li>`;
+  }).join("")||"<li>履歴はありません</li>";
+}
+
+async function load(){
+  try{
+    const r=await fetch(API);const list=await r.json();
+    renderHist(list);
+    if(list[0]){latest=list[0];render(list[0]);}
+  }catch(e){$("hist").innerHTML="<li>履歴を取得できませんでした</li>";}
+}
+
+function connect(){
+  const s=new WebSocket(WS);
+  s.onopen=()=>{$("status").textContent="リアルタイム受信中";$("status").className="on"};
+  s.onmessage=ev=>{
+    try{
+      const d=JSON.parse(ev.data);
+      if(d.code!==556)return;
+      latest=d;render(d);load();
+    }catch(e){}
+  };
+  s.onclose=()=>{$("status").textContent="再接続中…";$("status").className="off";setTimeout(connect,3000)};
+  s.onerror=()=>s.close();
+}
+
+$("snd").onclick=()=>{
+  sound=!sound;$("snd").textContent="音: "+(sound?"オン":"オフ");
+  if(sound){ctx=ctx||new AudioContext();beep();}
+};
+
+setInterval(()=>{if(latest)render(latest)},5000);
+setInterval(load,30000);
+load();connect();
+</script>
+</body>
+</html>
