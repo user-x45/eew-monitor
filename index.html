@@ -34,6 +34,18 @@ li{padding:10px 12px;border-bottom:1px solid var(--line);font-size:.9rem;display
 li small{color:var(--sub)}
 button{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;font-size:.8rem;cursor:pointer}
 button:focus-visible{outline:2px solid var(--warn)}
+details{border-bottom:1px solid var(--line)}
+summary{padding:10px 12px;font-size:.9rem;display:flex;justify-content:space-between;gap:8px;cursor:pointer;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--sub);margin-right:6px}
+details[open]>summary::before{content:"▾"}
+summary span{flex:1}summary small{color:var(--sub)}
+.detail{padding:4px 12px 14px 28px;font-size:.85rem}
+.detail dl{margin:0 0 8px}
+.detail table{width:100%;border-collapse:collapse;margin-top:6px}
+.detail td,.detail th{padding:3px 6px;border-top:1px solid var(--line);text-align:left;font-weight:400;vertical-align:top}
+.detail th{color:var(--sub);white-space:nowrap}
+.sc{display:inline-block;min-width:2.2em;text-align:center;padding:0 6px;border-radius:4px;background:var(--warn);color:#000;font-weight:700}
 footer{margin-top:24px;font-size:.75rem;color:var(--sub)}
 </style>
 </head>
@@ -47,7 +59,10 @@ footer{margin-top:24px;font-size:.75rem;color:var(--sub)}
 <section id="current" class="idle" aria-live="assertive">現在発表中の緊急地震速報はありません</section>
 
 <h2>最近の緊急地震速報(発表履歴)</h2>
-<ul id="hist"><li>読み込み中…</li></ul>
+<div id="hist"><li>読み込み中…</li></div>
+
+<h2>最近の地震情報(震度・各地の観測)</h2>
+<div id="quakes">読み込み中…</div>
 
 <footer>
 データ提供: P2P地震情報(気象庁発表の緊急地震速報を配信)。この表示は参考用です。避難判断はテレビ・ラジオ・スマートフォンの公式通知を優先してください。
@@ -101,14 +116,46 @@ function render(d){
   if(!d.test){document.body.classList.add("alert");beep();}
 }
 
+const esc=t=>String(t??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 function renderHist(list){
   $("hist").innerHTML=list.map(d=>{
     const h=d.earthquake?.hypocenter||{};
     const tag=d.cancelled?"【取消】":d.test?"【訓練】":"";
-    return `<li><span>${tag}${h.name||"震源不明"} ${h.magnitude>=0?"M"+h.magnitude:""}</span><small>${fmt(d.time)}</small></li>`;
-  }).join("")||"<li>履歴はありません</li>";
+    const rows=(d.areas||[]).map(a=>`<tr><th>${esc(a.name)}</th><td><span class="sc">${scale(a)}</span></td><td>${a.arrivalTime?"主要動到達 "+esc(a.arrivalTime):"到達済み/不明"}</td></tr>`).join("");
+    return `<details><summary><span>${tag}${esc(h.name)||"震源不明"} ${h.magnitude>=0?"M"+h.magnitude:""}</span><small>${fmt(d.time)}</small></summary>
+    <div class="detail"><dl>
+      <dt>震源</dt><dd>${esc(h.name)||"不明"}${h.latitude>-200?`(北緯${h.latitude}° 東経${h.longitude}°)`:""}</dd>
+      <dt>規模</dt><dd>${h.magnitude>=0?"M"+h.magnitude:"不明"}</dd>
+      <dt>深さ</dt><dd>${h.depth>=0?h.depth+" km":"不明"}</dd>
+      <dt>発生時刻</dt><dd>${fmt(d.earthquake?.originTime)}</dd>
+      <dt>発表時刻</dt><dd>${fmt(d.time)}</dd>
+      <dt>報数</dt><dd>${d.issue?.serial?"第"+d.issue.serial+"報":"-"}${d.issue?.eventId?"(ID "+esc(d.issue.eventId)+")":""}</dd>
+      <dt>種別</dt><dd>${d.cancelled?"取消":d.test?"訓練・テスト":"通常"}</dd>
+    </dl>${rows?`<table>${rows}</table>`:"<div>地域別の予想震度はありません</div>"}</div></details>`;
+  }).join("")||"履歴はありません";
 }
 
+function renderQuakes(list){
+  $("quakes").innerHTML=list.map(d=>{
+    const e=d.earthquake||{},h=e.hypocenter||{};
+    const ms=SCALE[e.maxScale]??"?";
+    const by={};
+    (d.points||[]).forEach(p=>{(by[p.scale]=by[p.scale]||[]).push(p.pref+" "+p.addr)});
+    const rows=Object.keys(by).sort((x,y)=>y-x).map(k=>`<tr><th><span class="sc">震度${SCALE[k]??"?"}</span></th><td>${by[k].map(esc).join("、")}</td></tr>`).join("");
+    const ts={None:"津波の心配なし",Unknown:"津波情報不明",Checking:"津波の有無を調査中",NonEffective:"若干の海面変動の可能性(被害の心配なし)",Watch:"津波注意報",Warning:"津波予報等あり"}[e.domesticTsunami]||"-";
+    return `<details><summary><span>${esc(h.name)||"震源不明"} 最大震度${ms} ${h.magnitude>=0?"M"+h.magnitude:""}</span><small>${fmt(e.time)}</small></summary>
+    <div class="detail"><dl>
+      <dt>発生時刻</dt><dd>${fmt(e.time)}</dd>
+      <dt>深さ</dt><dd>${h.depth>=0?(h.depth===0?"ごく浅い":h.depth+" km"):"不明"}</dd>
+      <dt>津波</dt><dd>${ts}</dd>
+    </dl>${rows?`<table>${rows}</table>`:"<div>観測点の詳細はありません</div>"}</div></details>`;
+  }).join("")||"情報はありません";
+}
+
+async function loadQuakes(){
+  try{const r=await fetch("https://api.p2pquake.net/v2/history?codes=551&limit=8");renderQuakes(await r.json());}
+  catch(e){$("quakes").textContent="地震情報を取得できませんでした";}
+}
 async function load(){
   try{
     const r=await fetch(API);const list=await r.json();
@@ -124,7 +171,7 @@ function connect(){
     try{
       const d=JSON.parse(ev.data);
       if(d.code!==556)return;
-      latest=d;render(d);load();
+      latest=d;render(d);load();loadQuakes();
     }catch(e){}
   };
   s.onclose=()=>{$("status").textContent="再接続中…";$("status").className="off";setTimeout(connect,3000)};
@@ -138,7 +185,7 @@ $("snd").onclick=()=>{
 
 setInterval(()=>{if(latest)render(latest)},5000);
 setInterval(load,30000);
-load();connect();
+load();loadQuakes();connect();setInterval(loadQuakes,60000);
 </script>
 </body>
 </html>
